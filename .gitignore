@@ -1,0 +1,22 @@
+# Rust
+/target
+**/target
+**/*.rs.bk
+
+# Android
+/android/.gradle
+/android/build
+/android/app/build
+/android/local.properties
+/android/app/src/main/jniLibs/
+
+# Native libs + ML models are build/download artifacts, not source
+*.so
+*.a
+*.onnx
+*.bin
+/models/
+
+# OS / editor
+.DS_Store
+*.swp

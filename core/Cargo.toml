@@ -1,0 +1,26 @@
+[package]
+name = "recall-core"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Recall shared core: VAD-gated segmentation, on-device ASR, store, summaries (Android now, iOS later via UniFFI)"
+
+[lib]
+name = "recall_core"
+# cdylib for the Android JNI .so; staticlib for the iOS xcframework; rlib so host tests/benches can link it.
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+# `bundled` compiles SQLite from source WITH FTS5 (Android's system SQLite lacks FTS5).
+# On the NDK build this swaps to `bundled-sqlcipher` for AES-256 encryption-at-rest.
+rusqlite = { version = "0.37", features = ["bundled"] }
+unsafe-libopus = "0.2.0"
+ogg = "0.9.2"
+
+# NOTE: the ONNX-backed VAD (voice_activity_detector / ort) and ASR (sherpa-rs) are
+# intentionally NOT dependencies yet — they require the Android NDK + a from-source
+# ONNX Runtime build and are wired during M0/M2. They sit behind the Vad/Asr traits.

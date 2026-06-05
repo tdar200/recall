@@ -1,0 +1,16 @@
+[workspace]
+resolver = "2"
+members = ["core"]
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+rust-version = "1.86"
+
+[profile.release]
+# MinSizeRel-ish: shrink the native .so shipped in the APK
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
