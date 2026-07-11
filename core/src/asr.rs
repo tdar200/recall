@@ -21,3 +21,17 @@ pub trait Asr: Send {
     /// Transcribe a finalized PCM buffer (i16 mono) in a single batch call.
     fn transcribe(&mut self, pcm: &[i16]) -> Result<Vec<Utterance>>;
 }
+
+/// An [`Asr`] that never transcribes anything.
+///
+/// Exists for two device-side cases: M0 soak mode (where `EngineCore` already
+/// skips ASR entirely, but the shell still needs a concrete `Box<dyn Asr>` to
+/// construct the engine) and the no-onnx fallback build, where the real
+/// Parakeet backend isn't linked in.
+pub struct NoopAsr;
+
+impl Asr for NoopAsr {
+    fn transcribe(&mut self, _pcm: &[i16]) -> Result<Vec<Utterance>> {
+        Ok(vec![])
+    }
+}

@@ -34,6 +34,20 @@ pub struct EngineConfig {
     /// Unix seconds at the start of the capture session (the core has no clock;
     /// the shell supplies this so conversation timestamps are absolute).
     pub session_start_unix: i64,
+    /// When true, the pipeline still frames audio and drives the VAD/segmenter
+    /// (so `frame_stats` is meaningful for tuning), but `finalize` is a no-op:
+    /// no ASR, no audio file, no store row, no listener events. Used for M0's
+    /// on-device soak testing, where we want frame-rate/battery telemetry
+    /// without persisting anything the user recorded.
+    pub soak_mode: bool,
+}
+
+/// Per-frame VAD counters, exposed for the shell's soak-mode telemetry (frame
+/// throughput and speech ratio don't require a full conversation to exist).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct FrameStats {
+    pub total_frames: u64,
+    pub speech_frames: u64,
 }
 
 /// Orchestrates capture → VAD → segmentation → ASR → store → summary → events.
@@ -50,6 +64,11 @@ pub struct EngineCore {
     store: Store,
     listener: Arc<dyn RecallListener>,
     session_start_unix: i64,
+    /// Mirrors `EngineConfig::soak_mode`; see its doc comment.
+    soak_mode: bool,
+    /// Copied from `cfg.segmenter.enter_threshold` at construction so
+    /// `push_audio`'s frame-counting doesn't need to reach into the segmenter.
+    enter_threshold: f32,
 
     /// Retained PCM, from which closed conversations are sliced.
     pcm: Vec<i16>,
@@ -59,6 +78,8 @@ pub struct EngineCore {
     frame_cursor: usize,
     /// Upper bound on retained, already-framed PCM (samples).
     retain_samples: usize,
+    /// Running per-frame VAD counters (see `frame_stats`).
+    frame_stats: FrameStats,
 }
 
 impl EngineCore {
@@ -77,6 +98,7 @@ impl EngineCore {
         // closing span is always still sliceable from `pcm`.
         let retain_ms = s.max_conversation_ms + s.pre_roll_ms + 2 * s.frame_ms;
         let retain_samples = retain_ms as usize * SAMPLES_PER_MS;
+        let enter_threshold = cfg.segmenter.enter_threshold;
         Self {
             vad,
             asr,
@@ -86,10 +108,13 @@ impl EngineCore {
             store,
             listener,
             session_start_unix: cfg.session_start_unix,
+            soak_mode: cfg.soak_mode,
+            enter_threshold,
             pcm: Vec::new(),
             pcm_start_ms: 0,
             frame_cursor: 0,
             retain_samples,
+            frame_stats: FrameStats::default(),
         }
     }
 
@@ -104,6 +129,11 @@ impl EngineCore {
             let speech_prob = self.vad.process_chunk(&frame);
             let energy = rms(&frame);
             self.frame_cursor += FRAME_SAMPLES;
+
+            self.frame_stats.total_frames += 1;
+            if speech_prob >= self.enter_threshold {
+                self.frame_stats.speech_frames += 1;
+            }
 
             if let Some(span) = self.segmenter.push(VadFrame { speech_prob, energy }) {
                 self.finalize(span)?;
@@ -125,8 +155,23 @@ impl EngineCore {
         self.store.list_conversations()
     }
 
+    pub fn get_conversation(&self, id: i64) -> Result<Option<Conversation>> {
+        self.store.get_conversation(id)
+    }
+
     pub fn search(&self, query: &str) -> Result<Vec<SearchHit>> {
         self.store.search(query)
+    }
+
+    /// Concatenated transcript text for a conversation (see `Store::transcript_text`).
+    pub fn transcript_text(&self, conversation_id: i64) -> Result<String> {
+        self.store.transcript_text(conversation_id)
+    }
+
+    /// Cumulative per-frame VAD counters since construction — for the shell's
+    /// soak-mode telemetry (frame throughput and speech ratio).
+    pub fn frame_stats(&self) -> FrameStats {
+        self.frame_stats
     }
 
     /// Build the one-tap cloud-summary request for a conversation (transcript
@@ -197,6 +242,13 @@ impl EngineCore {
 
     /// Transcribe, store, summarize, and announce a closed conversation.
     fn finalize(&mut self, span: crate::model::ConversationSpan) -> Result<()> {
+        if self.soak_mode {
+            // Soak mode only cares about frame-level VAD telemetry (already
+            // recorded in `push_audio`); skip ASR, encoding, storage, and events
+            // entirely so nothing the user recorded is persisted.
+            return Ok(());
+        }
+
         let start_sample = (span.start_ms.saturating_sub(self.pcm_start_ms)) as usize * SAMPLES_PER_MS;
         let end_sample = ((span.end_ms.saturating_sub(self.pcm_start_ms)) as usize * SAMPLES_PER_MS)
             .min(self.pcm.len());
@@ -338,6 +390,7 @@ mod tests {
                 energy_gate: 0.0,
             },
             session_start_unix: 1_000_000,
+            soak_mode: false,
         }
     }
 
@@ -354,10 +407,11 @@ mod tests {
         d
     }
 
-    fn engine_in(
+    fn engine_in_with_cfg(
         dir: std::path::PathBuf,
         probs: Vec<f32>,
         listener: Arc<RecordingListener>,
+        cfg: EngineConfig,
     ) -> EngineCore {
         EngineCore::new(
             Store::open_in_memory().unwrap(),
@@ -366,12 +420,25 @@ mod tests {
             Box::new(crate::audio::WavEncoder::new()),
             dir,
             listener,
-            cfg(),
+            cfg,
         )
+    }
+
+    fn engine_in(
+        dir: std::path::PathBuf,
+        probs: Vec<f32>,
+        listener: Arc<RecordingListener>,
+    ) -> EngineCore {
+        engine_in_with_cfg(dir, probs, listener, cfg())
     }
 
     fn engine(probs: Vec<f32>, listener: Arc<RecordingListener>) -> EngineCore {
         engine_in(temp_dir(), probs, listener)
+    }
+
+    /// Same tuning as `cfg()` but with `soak_mode` on.
+    fn cfg_soak() -> EngineConfig {
+        EngineConfig { soak_mode: true, ..cfg() }
     }
 
     /// Build a per-frame probability stream from (prob, frame_count) runs.
@@ -534,5 +601,49 @@ mod tests {
         assert!(!std::path::Path::new(&path).exists());
         assert!(e.list_conversations().unwrap().is_empty());
         assert!(e.search("budget").unwrap().is_empty());
+    }
+
+    #[test]
+    fn frame_stats_counts_total_and_speech_frames() {
+        // cfg()'s enter_threshold is 0.5: 5 frames at 0.9 are speech, 4 at 0.0 aren't.
+        let mut e = engine(frames(&[(0.9, 5), (0.0, 4)]), Arc::new(RecordingListener::default()));
+        e.push_audio(&pcm_for(9)).unwrap();
+
+        let stats = e.frame_stats();
+        assert_eq!(stats.total_frames, 9);
+        assert_eq!(stats.speech_frames, 5);
+    }
+
+    #[test]
+    fn soak_mode_counts_frames_but_persists_nothing() {
+        let dir = temp_dir();
+        let mut e = engine_in_with_cfg(
+            dir.clone(),
+            frames(&[(0.9, 5), (0.0, 4)]),
+            Arc::new(RecordingListener::default()),
+            cfg_soak(),
+        );
+        e.push_audio(&pcm_for(9)).unwrap();
+        e.finish_capture().unwrap();
+
+        assert!(e.frame_stats().total_frames > 0);
+        assert!(e.list_conversations().unwrap().is_empty());
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            0,
+            "soak mode must not write any audio files"
+        );
+    }
+
+    #[test]
+    fn engine_exposes_conversation_and_transcript() {
+        let mut e = engine(frames(&[(0.9, 5), (0.0, 4)]), Arc::new(RecordingListener::default()));
+        let id = one_conversation(&mut e);
+
+        let c = e.get_conversation(id).unwrap().expect("conversation should exist");
+        assert_eq!(c.id, id);
+
+        let text = e.transcript_text(id).unwrap();
+        assert_eq!(text, "we discussed the budget and agreed to meet friday");
     }
 }
