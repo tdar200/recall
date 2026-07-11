@@ -1,9 +1,9 @@
 //! Voice-activity-detection abstraction.
 //!
-//! The production backend is Silero VAD v5 (via the `voice_activity_detector`
-//! crate over `ort`/ONNX Runtime), added on the Android NDK build. The core and
-//! its tests depend only on the [`Vad`] trait plus the per-frame [`VadFrame`]
-//! values that drive the segmentation FSM.
+//! The production backend is Silero VAD v5 via the official `sherpa-onnx`
+//! crate ([`crate::onnx::SileroVad`], behind the `onnx` cargo feature). The
+//! core and its tests depend only on the [`Vad`] trait plus the per-frame
+//! [`VadFrame`] values that drive the segmentation FSM.
 
 /// The result of analysing one fixed-size audio frame.
 #[derive(Debug, Clone, Copy, PartialEq)]

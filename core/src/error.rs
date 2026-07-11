@@ -8,6 +8,8 @@ pub enum CoreError {
     Db(String),
     #[error("asr error: {0}")]
     Asr(String),
+    #[error("vad error: {0}")]
+    Vad(String),
     #[error("io error: {0}")]
     Io(String),
     #[error("cloud request error: {0}")]

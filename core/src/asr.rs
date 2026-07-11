@@ -1,9 +1,9 @@
 //! Speech-to-text abstraction.
 //!
-//! The production backend is NVIDIA Parakeet-TDT-0.6B v2 via sherpa-onnx
-//! (the `sherpa-rs` crate), run in BATCH on each finalized conversation —
-//! never streaming. It is added on the Android NDK build; the core depends only
-//! on the [`Asr`] trait so host tests can use a mock.
+//! The production backend is NVIDIA Parakeet-TDT-0.6B v2 via the official
+//! `sherpa-onnx` crate ([`crate::onnx::ParakeetAsr`], behind the `onnx` cargo
+//! feature), run in BATCH on each finalized conversation — never streaming.
+//! The core depends only on the [`Asr`] trait so host tests can use a mock.
 
 use crate::error::Result;
 

@@ -20,6 +20,8 @@ pub mod engine;
 pub mod error;
 pub mod events;
 pub mod model;
+#[cfg(feature = "onnx")]
+pub mod onnx;
 pub mod segment;
 pub mod store;
 pub mod summary;
