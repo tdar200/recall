@@ -9,8 +9,14 @@
 > highest-friction build step: compiling ONNX Runtime for Android and running
 > Parakeet on-device.
 >
-> **This cannot run in the dev sandbox** (no `adb`, no Android SDK/NDK, no device).
-> You run it on a machine with the Android toolchain + your Samsung Galaxy plugged in.
+> **This cannot run in the dev sandbox** (no device).
+> You run it on a machine with `adb` + your Samsung Galaxy plugged in.
+>
+> **Update (2026-07-12): the shipped app is the harness.** The shell, engine,
+> ONNX models, and `.so` packaging are built and verified end-to-end on an
+> emulator (`docs/EMULATOR-E2E.md`), so Part A now uses the app's built-in
+> **Soak screen** (no bespoke harness), and Part B's build/integration friction
+> is already burned down — only the on-phone RTF number remains to measure.
 
 ## Prerequisites (one-time)
 
@@ -23,7 +29,7 @@
 If you skip this, you'll measure a service Samsung silently killed, not the real
 steady state. On the phone:
 
-1. Settings → Apps → **(the M0 harness app)** → Battery → **Unrestricted**.
+1. Settings → Apps → **Recall** → Battery → **Unrestricted**.
 2. Settings → Battery → Background usage limits → **Never sleeping apps** → add the app.
 3. Settings → Battery → Background usage limits → **remove** the app from "Sleeping apps" / "Deep sleeping apps" if present.
 4. Settings → Device care → Battery → turn **off** "Put unused apps to sleep" / "Auto-disable unused apps" (or exempt the app).
@@ -42,22 +48,28 @@ while capturing 16 kHz mono audio + running Silero VAD continuously, **with ASR
 disabled** (ASR is gated behind VAD and runs only in bursts; we isolate the
 always-on baseline first).
 
-**Harness:** a minimal foreground-service app that does exactly the M1 capture
-path and nothing else:
-- `foregroundServiceType="microphone"`, started from a visible activity.
-- `AudioRecord` 16 kHz / mono / 16-bit on a dedicated thread + `PARTIAL_WAKE_LOCK`.
-- Feeds frames to Silero VAD (use `gkonovalov/android-vad` for the spike, or the
-  Rust core's VAD once Part B is wired) and **counts** speech frames — **no ASR,
-  no disk writes of audio** (keep it pure to isolate capture+VAD cost).
-- Persistent notification; logs a heartbeat + VAD speech-ratio every 60 s.
-
-> I (Claude) can generate this minimal harness app next if you want — it's small.
-> It deliberately reuses the exact M1 capture settings so the numbers transfer.
+**Harness: the shipped Recall app's Soak mode.** It is exactly the M1 capture
+path with ASR/persistence disabled in the Rust engine (`soak_mode` counts VAD
+frames but writes nothing — unit-test-guarded):
+- Install the debug APK (`android/app/build/outputs/apk/debug/app-debug.apk`;
+  build per the README) and download/push the models (the Feed banner's
+  "Download models" button does it in-app, or `adb push` per
+  `scripts/e2e-emulator.sh`).
+- Open the **Soak** tab → turn the **Soak mode** switch ON. The same screen has
+  buttons deep-linking to the battery-optimization settings, plus this
+  checklist as in-app text.
+- Go to **Feed** → tap **Start**. That starts the foreground capture service
+  (`foregroundServiceType="microphone"`, `AudioRecord` 16 kHz/mono/16-bit on a
+  dedicated thread, `PARTIAL_WAKE_LOCK`) with soak mode active.
+- Every 60 s the service logs `RecallSoak: heartbeat total=<n> speech=<n>` and
+  mirrors it in the notification; the Soak screen shows live frame stats.
+  Gaps in the heartbeat timestamps = Samsung killed the service (risk #1).
 
 **Procedure:**
 
 ```sh
-# 0. Build & install the harness, apply the Samsung checklist above, start capture.
+# 0. Install the app, apply the Samsung checklist above, enable Soak mode, start capture.
+#    Watch heartbeats: adb logcat -v time -s RecallSoak
 
 # 1. Reset battery stats, then UNPLUG (batterystats only accrues on battery).
 adb shell dumpsys batterystats --reset
@@ -100,9 +112,45 @@ app's draw from the rest of the system).
 
 ## Part B — On-device Parakeet RTF spike
 
-**Goal:** prove **Parakeet-TDT-0.6B v2 via sherpa-onnx** runs **faster than
-realtime** on your Samsung, and surface the ONNX-Runtime-build friction early.
-Do it in two steps — cheap speed proof first, integration proof second.
+> **Status: integration already proven.** The full Rust path (sherpa-onnx →
+> Parakeet int8 → engine → store) runs green end-to-end on an x86_64 emulator —
+> a 7 s reference wav ingests in ~23 s *including cold model load* (5–7 s
+> warm), with a word-for-word-correct transcript (`docs/EMULATOR-E2E.md`). All the build
+> friction the verifiers flagged (ONNX Runtime packaging, 16 KB pages,
+> `SHERPA_ONNX_LIB_DIR`, libc++) is resolved in `scripts/build-android-libs.sh`.
+> **What remains is only the RTF number on your real phone** — arm64 silicon
+> should be far faster than the emulated x86_64 VM (research saw RTF ≈ 0.09 on
+> a 2019 Galaxy S10).
+
+**To measure on the phone:** re-run the `scripts/e2e-emulator.sh` flow against
+the device (skip the AVD/boot steps — start at `adb install`):
+
+```sh
+adb install -r android/app/build/outputs/apk/debug/app-debug.apk
+adb shell am start -n com.recall.app/.MainActivity   # creates external files dir
+# Push models (or use the in-app "Download models" button on the Feed banner):
+adb shell mkdir -p /sdcard/Android/data/com.recall.app/files/models/parakeet
+adb push models/silero_vad.onnx /sdcard/Android/data/com.recall.app/files/models/
+for f in encoder.int8.onnx decoder.int8.onnx joiner.int8.onnx tokens.txt; do
+  adb push "models/parakeet/$f" /sdcard/Android/data/com.recall.app/files/models/parakeet/
+done
+adb shell pm grant com.recall.app android.permission.RECORD_AUDIO
+adb shell pm grant com.recall.app android.permission.POST_NOTIFICATIONS
+adb shell am force-stop com.recall.app && adb shell am start -n com.recall.app/.MainActivity
+# Push the 7s reference wav into the app's own files dir (NOT /sdcard/Download —
+# scoped storage blocks it) and time the ingest:
+adb push models/parakeet/test_wavs/0.wav /sdcard/Android/data/com.recall.app/files/test.wav
+adb logcat -c
+adb shell am broadcast -n com.recall.app/.DebugReceiver -a com.recall.DEBUG_INGEST \
+  --es path /sdcard/Android/data/com.recall.app/files/test.wav
+adb logcat -v time -s RecallDebug   # "received ..." → "ingest done" delta = wall time
+```
+
+RTF ≈ (ingest wall time) / 7 s. Run it twice — the second run excludes cold
+model load and is the number that matters for live capture.
+
+Original two-step spike below, kept for reference (B1 is still a useful
+independent cross-check; B2 is done):
 
 ### B1 — Speed proof (prebuilt, low effort)
 
