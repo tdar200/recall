@@ -74,9 +74,7 @@ class CaptureService : Service() {
         val minBuf = AudioRecord.getMinBufferSize(sampleRate, channelConfig, encoding)
         if (minBuf <= 0) {
             Log.e(TAG, "AudioRecord.getMinBufferSize failed: $minBuf")
-            running.set(false)
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
+            abortCapture()
             return
         }
 
@@ -84,9 +82,7 @@ class CaptureService : Service() {
         if (audioRecord.state != AudioRecord.STATE_INITIALIZED) {
             Log.e(TAG, "AudioRecord failed to initialize")
             audioRecord.release()
-            running.set(false)
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
+            abortCapture()
             return
         }
 
@@ -111,11 +107,17 @@ class CaptureService : Service() {
             audioRecord.stop()
             audioRecord.release()
             runBlocking { repository.finishCapture() }
-            wakeLock?.let { if (it.isHeld) it.release() }
-            wakeLock = null
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
+            abortCapture()
         }
+    }
+
+    /** Common teardown: release the wake lock, drop the foreground notification, stop the service. */
+    private fun abortCapture() {
+        running.set(false)
+        wakeLock?.let { if (it.isHeld) it.release() }
+        wakeLock = null
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
     }
 
     private fun emitHeartbeat() {
