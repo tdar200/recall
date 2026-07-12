@@ -8,8 +8,20 @@
 #   - cargo-ndk on PATH (cargo install cargo-ndk)
 #   - rustup targets aarch64-linux-android + x86_64-linux-android installed
 #
+# Usage:
+#   scripts/build-android-libs.sh              # full cross-compile + stage + verify
+#   scripts/build-android-libs.sh --verify-only # re-run only the preflight/alignment/
+#                                                # NEEDED checks against the jniLibs already
+#                                                # staged on disk (useful in CI after the
+#                                                # build artifacts are restored/cached).
+#
 # See .superpowers/sdd/task-6-brief.md and task-6-report.md for the full rationale.
 set -euo pipefail
+
+VERIFY_ONLY=false
+if [ "${1:-}" = "--verify-only" ]; then
+  VERIFY_ONLY=true
+fi
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
@@ -20,6 +32,11 @@ if [ ! -d "$ANDROID_NDK_HOME" ]; then
   exit 1
 fi
 
+if ! command -v cargo-ndk >/dev/null 2>&1; then
+  echo "error: cargo-ndk not found on PATH (cargo install cargo-ndk)" >&2
+  exit 1
+fi
+
 SHERPA_VERSION="1.13.4"
 SHERPA_TARBALL="sherpa-onnx-v${SHERPA_VERSION}-android.tar.bz2"
 SHERPA_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/v${SHERPA_VERSION}/${SHERPA_TARBALL}"
@@ -27,6 +44,83 @@ THIRD_PARTY_DIR="$REPO_ROOT/third_party/sherpa-onnx-android"
 JNI_LIBS_OUT="$REPO_ROOT/android/app/src/main/jniLibs"
 
 ABIS=(arm64-v8a x86_64)
+
+abi_triple() {
+  case "$1" in
+    arm64-v8a) echo "aarch64-linux-android" ;;
+    x86_64) echo "x86_64-linux-android" ;;
+    *) echo "error: no known Android triple for abi '$1'" >&2; exit 1 ;;
+  esac
+}
+
+# Step 4: gate on 16KB page alignment of librecall_core.so (Play Store requires
+# 16KB page-size support on arm64; a misaligned LOAD segment must fail the build,
+# not just be printed).
+check_alignment() {
+  echo "== Step 4: verify 16KB page alignment of librecall_core.so =="
+  local fail=0
+  for abi in "${ABIS[@]}"; do
+    local so="$JNI_LIBS_OUT/$abi/librecall_core.so"
+    if [ ! -f "$so" ]; then
+      echo "error: $so not found (run the build first, without --verify-only)" >&2
+      exit 1
+    fi
+    echo "--- $abi: readelf -lW | grep LOAD ---"
+    readelf -lW "$so" | grep LOAD
+    while read -r align; do
+      if [ "$align" != "0x4000" ]; then
+        echo "error: $so has a LOAD segment aligned to $align, expected 0x4000 (16KB pages)" >&2
+        fail=1
+      fi
+    done < <(readelf -lW "$so" | awk '/LOAD/ {print $NF}')
+  done
+  if [ "$fail" -ne 0 ]; then
+    exit 1
+  fi
+}
+
+# Step 5: check the NEEDED closure of every staged lib is satisfiable, and
+# auto-copy libc++_shared.so from the NDK sysroot into the ABI dir if anything
+# needs it (the sherpa-onnx android prebuilts normally statically link libc++,
+# but this keeps the script correct if that ever changes upstream).
+check_needed() {
+  echo "== Step 5: check NEEDED libs are satisfiable =="
+  for abi in "${ABIS[@]}"; do
+    local dest="$JNI_LIBS_OUT/$abi"
+    local libs=(librecall_core.so libsherpa-onnx-c-api.so libonnxruntime.so)
+    local needs_libcxx=0
+    for lib in "${libs[@]}"; do
+      local f="$dest/$lib"
+      if [ ! -f "$f" ]; then
+        echo "error: $f not found (run the build first, without --verify-only)" >&2
+        exit 1
+      fi
+      echo "--- $abi: NEEDED for $lib ---"
+      readelf -d "$f" | grep NEEDED || true
+      if readelf -d "$f" | grep NEEDED | grep -q 'libc++_shared\.so'; then
+        needs_libcxx=1
+      fi
+    done
+    if [ "$needs_libcxx" -eq 1 ]; then
+      local triple
+      triple="$(abi_triple "$abi")"
+      local src="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/$triple/libc++_shared.so"
+      if [ ! -f "$src" ]; then
+        echo "error: $abi NEEDED closure requires libc++_shared.so but it's missing from the NDK sysroot at $src" >&2
+        exit 1
+      fi
+      cp -f "$src" "$dest/"
+      echo "copied libc++_shared.so into $dest (required by NEEDED closure)"
+    fi
+  done
+}
+
+if [ "$VERIFY_ONLY" = true ]; then
+  check_alignment
+  check_needed
+  echo "--verify-only: all checks passed."
+  exit 0
+fi
 
 echo "== Step 1: fetch prebuilt sherpa-onnx android shared libs =="
 mkdir -p "$THIRD_PARTY_DIR"
@@ -72,22 +166,8 @@ for abi in "${ABIS[@]}"; do
   echo "staged: $(ls "$dest")"
 done
 
-echo "== Step 4: verify 16KB page alignment of librecall_core.so =="
-for abi in "${ABIS[@]}"; do
-  so="$JNI_LIBS_OUT/$abi/librecall_core.so"
-  echo "--- $abi: readelf -lW | grep LOAD ---"
-  readelf -lW "$so" | grep LOAD
-done
+check_alignment
 
-echo "== Step 5: check NEEDED libs are satisfiable =="
-for abi in "${ABIS[@]}"; do
-  dest="$JNI_LIBS_OUT/$abi"
-  echo "--- $abi: NEEDED for librecall_core.so ---"
-  readelf -d "$dest/librecall_core.so" | grep NEEDED || true
-  echo "--- $abi: NEEDED for libsherpa-onnx-c-api.so ---"
-  readelf -d "$dest/libsherpa-onnx-c-api.so" | grep NEEDED || true
-done
+check_needed
 
 echo "Done. jniLibs staged under $JNI_LIBS_OUT/{${ABIS[*]}}"
-echo "If any NEEDED lib is libc++_shared.so, copy it from:"
-echo "  \$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/*/sysroot/usr/lib/<triple>/libc++_shared.so"
