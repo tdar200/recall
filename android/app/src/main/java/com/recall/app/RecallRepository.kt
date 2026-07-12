@@ -68,6 +68,9 @@ class RecallRepository(context: Context) {
 
     private var engine: RecallEngine? = null
 
+    /** The [soakMode] value the currently-cached [engine] was constructed with. */
+    private var builtSoakMode: Boolean = false
+
     /**
      * Lazily constructs the engine. Any construction failure (missing models, missing
      * native library, corrupt db, ...) is caught and logged; callers get `null` back
@@ -88,6 +91,7 @@ class RecallRepository(context: Context) {
                 listener = listener,
             )
             engine = e
+            builtSoakMode = soakMode
             e
         } catch (t: Throwable) {
             Log.w(TAG, "engine construction failed: ${t.message}")
@@ -95,30 +99,65 @@ class RecallRepository(context: Context) {
         }
     }
 
-    suspend fun pushAudio(pcm: ShortArray, len: Int) {
+    /**
+     * Drops the cached engine if it was built with a different [soakMode] than the
+     * current pref, so the next [engineOrNull] call rebuilds it with the up-to-date
+     * flag. Only safe to call when no capture is active — [CaptureService] is the
+     * sole capture driver and calls this at the top of `startCapture()`, before the
+     * record thread is spawned, which guarantees the engine is never dropped out
+     * from under an in-flight capture.
+     */
+    @Synchronized
+    fun ensureEngineMatchesSoakMode() {
+        if (engine != null && builtSoakMode != soakMode) {
+            Log.i(TAG, "soak mode changed ($builtSoakMode -> $soakMode); dropping cached engine for rebuild")
+            engine = null
+        }
+    }
+
+    /**
+     * Eagerly constructs the engine (if possible) so model loading happens up front
+     * rather than blocking the first audio chunk of a capture session. Safe to call
+     * redundantly; a no-op once the engine is already built.
+     */
+    fun warmEngine() {
+        engineOrNull()
+    }
+
+    suspend fun pushAudio(pcm: ShortArray, len: Int): Boolean {
         val bytes = ByteArray(len * 2)
         for (i in 0 until len) {
             val v = pcm[i].toInt()
             bytes[i * 2] = (v and 0xFF).toByte()
             bytes[i * 2 + 1] = ((v shr 8) and 0xFF).toByte()
         }
-        pushAudioBytes(bytes)
+        return pushAudioBytes(bytes)
     }
 
-    /** Push already-LE-encoded 16-bit PCM bytes (used by [DebugReceiver] ingesting a wav). */
-    suspend fun pushAudioBytes(bytes: ByteArray) = withContext(Dispatchers.IO) {
+    /**
+     * Push already-LE-encoded 16-bit PCM bytes (used by [DebugReceiver] ingesting a
+     * wav and by [CaptureService]'s record loop). Returns `true` on success so
+     * callers on the capture path can detect a dead recorder (e.g. a Rust panic
+     * repeatedly failing pushes) rather than silently looking healthy. Catches
+     * [Throwable] (not just [CoreException]) — a native panic across the UniFFI
+     * boundary must never take the app down.
+     */
+    suspend fun pushAudioBytes(bytes: ByteArray): Boolean = withContext(Dispatchers.IO) {
+        val e = engineOrNull() ?: return@withContext false
         try {
-            engineOrNull()?.pushAudio(bytes)
-        } catch (t: CoreException) {
-            Log.w(TAG, "pushAudio failed: ${t.message}")
+            e.pushAudio(bytes)
+            true
+        } catch (t: Throwable) {
+            Log.w(TAG, "pushAudio failed: ${t.message}", t)
+            false
         }
     }
 
     suspend fun finishCapture() = withContext(Dispatchers.IO) {
         try {
             engineOrNull()?.finishCapture()
-        } catch (t: CoreException) {
-            Log.w(TAG, "finishCapture failed: ${t.message}")
+        } catch (t: Throwable) {
+            Log.w(TAG, "finishCapture failed: ${t.message}", t)
         }
     }
 
@@ -222,12 +261,18 @@ class RecallRepository(context: Context) {
         }
     }
 
-    suspend fun storeCloudSummary(id: Long, json: String) = withContext(Dispatchers.IO) {
+    /** Returns `true` on success; `false` if the engine isn't ready or the store call
+     * failed, so callers (DetailScreen) can surface the failure instead of silently
+     * treating it as success. */
+    suspend fun storeCloudSummary(id: Long, json: String): Boolean = withContext(Dispatchers.IO) {
+        val e = engineOrNull() ?: return@withContext false
         try {
-            engineOrNull()?.storeCloudSummary(id, json)
+            e.storeCloudSummary(id, json)
             bump()
-        } catch (t: CoreException) {
-            Log.w(TAG, "storeCloudSummary failed: ${t.message}")
+            true
+        } catch (t: Throwable) {
+            Log.w(TAG, "storeCloudSummary failed: ${t.message}", t)
+            false
         }
     }
 

@@ -147,10 +147,20 @@ private fun ConversationRow(conv: FfiConversation, onClick: () -> Unit) {
         Column(modifier = Modifier.padding(12.dp)) {
             Text(formatStart(conv.startedAt), style = MaterialTheme.typography.titleMedium)
             Text("${conv.durationS}s", style = MaterialTheme.typography.bodySmall)
-            val summary = conv.summaryCloud ?: conv.summaryBasic
-            if (!summary.isNullOrBlank()) {
+            // summaryCloud is a JSON document (see core/src/cloud.rs's output_schema) —
+            // parse and show its one_line_summary rather than the raw JSON. Falls back
+            // to the first line of the raw string if it doesn't parse.
+            val cloud = conv.summaryCloud
+            val basic = conv.summaryBasic
+            val displayText = when {
+                cloud != null -> parseCloudSummary(cloud)?.oneLineSummary
+                    ?: cloud.lineSequence().firstOrNull().orEmpty()
+                !basic.isNullOrBlank() -> basic.lineSequence().firstOrNull().orEmpty()
+                else -> null
+            }
+            if (!displayText.isNullOrBlank()) {
                 Text(
-                    summary.lineSequence().firstOrNull().orEmpty(),
+                    displayText,
                     maxLines = 2,
                     modifier = Modifier.padding(top = 4.dp),
                 )

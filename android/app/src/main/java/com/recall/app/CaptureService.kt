@@ -55,6 +55,13 @@ class CaptureService : Service() {
         if (running.getAndSet(true)) return
         startForeground(NOTIFICATION_ID, buildNotification("Recording…"), ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
         acquireWakeLock()
+        // No capture is active yet (the record thread hasn't been spawned), so it's
+        // safe to drop/rebuild the cached engine here if the soak-mode pref changed
+        // since it was last built. Then warm it (construct + load models) up front,
+        // rather than paying that latency inline on the first chunk pushed from the
+        // record loop.
+        repository.ensureEngineMatchesSoakMode()
+        repository.warmEngine()
         recordThread = Thread(::recordLoop, "RecallCapture").apply { start() }
     }
 
@@ -80,9 +87,15 @@ class CaptureService : Service() {
 
         val soakModeAtStart = repository.soakMode
 
+        // At least 10s of audio (16000 samples/s * 2 bytes/sample * 10s), so a stall
+        // while a long conversation finalizes (inline ASR under the engine's mutex)
+        // or while the engine first loads models doesn't overrun AudioRecord's
+        // internal buffer and drop audio before we can read it.
+        val bufferSizeInBytes = maxOf(TEN_SECOND_BUFFER_BYTES, 4 * minBuf)
+
         val audioRecord: AudioRecord
         try {
-            audioRecord = AudioRecord(MediaRecorder.AudioSource.MIC, sampleRate, channelConfig, encoding, 4 * minBuf)
+            audioRecord = AudioRecord(MediaRecorder.AudioSource.MIC, sampleRate, channelConfig, encoding, bufferSizeInBytes)
         } catch (t: Throwable) {
             Log.e(TAG, "AudioRecord construction threw: ${t.message}", t)
             abortCapture()
@@ -97,12 +110,27 @@ class CaptureService : Service() {
 
         val buffer = ShortArray(8000)
         var lastHeartbeat = System.currentTimeMillis()
+        var consecutivePushFailures = 0
         try {
             audioRecord.startRecording()
             while (running.get()) {
                 val read = audioRecord.read(buffer, 0, buffer.size)
                 if (read > 0) {
-                    runBlocking { repository.pushAudio(buffer, read) }
+                    val pushed = runBlocking { repository.pushAudio(buffer, read) }
+                    if (pushed) {
+                        consecutivePushFailures = 0
+                    } else {
+                        consecutivePushFailures++
+                        if (consecutivePushFailures >= MAX_CONSECUTIVE_PUSH_FAILURES) {
+                            Log.e(
+                                TAG,
+                                "stopping capture: $consecutivePushFailures consecutive pushAudio " +
+                                    "failures (~${MAX_CONSECUTIVE_PUSH_FAILURES / 2}s of dead audio)",
+                            )
+                            updateNotification("Recording failed — open Recall")
+                            running.set(false)
+                        }
+                    }
                 }
                 if (soakModeAtStart) {
                     val now = System.currentTimeMillis()
@@ -159,6 +187,14 @@ class CaptureService : Service() {
         private const val CHANNEL_ID = "recall_capture"
         private const val NOTIFICATION_ID = 1
         private const val HEARTBEAT_INTERVAL_MS = 60_000L
+
+        /** 16000 samples/s * 2 bytes/sample * 10s — see the buffer-sizing comment above. */
+        private const val TEN_SECOND_BUFFER_BYTES = 16_000 * 2 * 10
+
+        /** 20 consecutive 0.5s chunks (see `buffer = ShortArray(8000)`) = ~10s of dead audio
+         * before we give up on the recorder rather than looking healthy while doing nothing. */
+        private const val MAX_CONSECUTIVE_PUSH_FAILURES = 20
+
         const val ACTION_START = "com.recall.app.action.START_CAPTURE"
         const val ACTION_STOP = "com.recall.app.action.STOP_CAPTURE"
     }

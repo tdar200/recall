@@ -147,6 +147,10 @@ fun DetailScreen(repository: RecallRepository, conversationId: Long, onBack: () 
 @Composable
 private fun SummaryCard(conv: FfiConversation) {
     val cloud = conv.summaryCloud
+    // summaryCloud is a JSON document (core/src/cloud.rs's output_schema); parse it
+    // and show one_line_summary + key_points rather than the raw JSON, falling back
+    // to the raw string if it doesn't parse.
+    val parsedCloud = cloud?.let { parseCloudSummary(it) }
     Card(
         colors = if (cloud != null) {
             CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
@@ -156,7 +160,16 @@ private fun SummaryCard(conv: FfiConversation) {
     ) {
         Column(modifier = Modifier.padding(12.dp)) {
             Text(if (cloud != null) "Cloud summary" else "Summary", style = MaterialTheme.typography.labelLarge)
-            Text(cloud ?: conv.summaryBasic ?: "(no summary yet)", modifier = Modifier.padding(top = 4.dp))
+            when {
+                parsedCloud != null -> {
+                    Text(parsedCloud.oneLineSummary, modifier = Modifier.padding(top = 4.dp))
+                    parsedCloud.keyPoints.forEach { point ->
+                        Text("• $point", modifier = Modifier.padding(top = 2.dp))
+                    }
+                }
+                cloud != null -> Text(cloud, modifier = Modifier.padding(top = 4.dp))
+                else -> Text(conv.summaryBasic ?: "(no summary yet)", modifier = Modifier.padding(top = 4.dp))
+            }
         }
     }
 }
@@ -192,5 +205,11 @@ private suspend fun postCloudSummary(repository: RecallRepository, id: Long, api
     }
 
     val text = JSONObject(responseBody).getJSONArray("content").getJSONObject(0).getString("text")
-    repository.storeCloudSummary(id, text)
+    // storeCloudSummary swallows and logs repository/engine-level failures internally
+    // (so a native panic can't crash the UI) — check its return so the caller's
+    // catch block surfaces the failure as cloudError instead of silently no-oping.
+    val stored = repository.storeCloudSummary(id, text)
+    if (!stored) {
+        throw IllegalStateException("failed to save cloud summary")
+    }
 }
