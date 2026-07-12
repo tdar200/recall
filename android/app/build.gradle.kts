@@ -16,6 +16,14 @@ android {
         versionName = "0.1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        // Only the ABIs we build librecall_core.so for (scripts/build-android-libs.sh).
+        // Without this, transitive AARs (JNA's libjnidispatch, androidx.graphics) inject
+        // armeabi-v7a/x86/mips dirs into the APK; a 32-bit device would then install the
+        // APK, resolve to those dirs, and crash at runtime with no librecall_core.so.
+        ndk {
+            abiFilters += listOf("arm64-v8a", "x86_64")
+        }
     }
 
     buildTypes {
