@@ -54,6 +54,8 @@ dependencies {
     implementation("androidx.compose.ui:ui-graphics")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
+    // Icons.Filled.{Mic,Stop,Storage,...} live outside the small default icon set.
+    implementation("androidx.compose.material:material-icons-extended")
     debugImplementation("androidx.compose.ui:ui-tooling")
 
     implementation("androidx.activity:activity-compose:1.13.0")
@@ -67,4 +69,7 @@ dependencies {
 
     // Coroutines for bridging suspend/Flow-based bindings and app-side async work.
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
+
+    // ModelManager: extracting the parakeet .tar.bz2 model bundle on-device.
+    implementation("org.apache.commons:commons-compress:1.28.0")
 }
