@@ -1,0 +1,3 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Empty for now; debug-only manifest overrides land in a later task. -->
+</manifest>
