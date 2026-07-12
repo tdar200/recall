@@ -19,6 +19,7 @@ pub mod cloud;
 pub mod engine;
 pub mod error;
 pub mod events;
+pub mod ffi;
 pub mod model;
 #[cfg(feature = "onnx")]
 pub mod onnx;
@@ -29,3 +30,8 @@ pub mod vad;
 
 pub use error::{CoreError, Result};
 pub use model::{ConversationSpan, Millis};
+
+// UniFFI's proc-macro-only mode (no .udl file): this registers the scaffolding
+// that `uniffi::uniffi_bindgen_main()` (see `src/bin/uniffi-bindgen.rs`) reads
+// back out of the compiled cdylib via `--library`.
+uniffi::setup_scaffolding!();

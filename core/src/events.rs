@@ -7,6 +7,12 @@
 //! they must be thread-safe (`Send + Sync`).
 
 /// Listener implemented by the native shell to receive core events.
+///
+/// `with_foreign`: UniFFI generates both a Rust-side vtable call path AND the
+/// Kotlin/Swift trait implementation glue, so a Kotlin object implementing the
+/// generated `RecallListener` interface can be handed back into Rust as an
+/// `Arc<dyn RecallListener>` (see `ffi::RecallEngine::new`).
+#[uniffi::export(with_foreign)]
 pub trait RecallListener: Send + Sync {
     /// A conversation's audio boundaries were finalized and persisted.
     fn on_conversation_finalized(&self, conversation_id: i64);

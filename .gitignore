@@ -9,6 +9,9 @@
 /android/app/build
 /android/local.properties
 /android/app/src/main/jniLibs/
+# UniFFI-generated Kotlin bindings (regenerate via `cargo run -p recall-core
+# --bin uniffi-bindgen -- generate ...`; see core/uniffi.toml + Task 3 report).
+/android/app/src/main/java/com/recall/core/
 
 # Native libs + ML models are build/download artifacts, not source
 *.so

@@ -20,6 +20,9 @@ thiserror = "2"
 rusqlite = { version = "0.37", features = ["bundled"] }
 unsafe-libopus = "0.2.0"
 ogg = "0.9.2"
+# UniFFI bridge (Task 3): exports RecallEngine + RecallListener to Kotlin/Swift.
+# `cli` pulls in the bindgen binary support used by `src/bin/uniffi-bindgen.rs`.
+uniffi = { version = "0.32", features = ["cli"] }
 
 # The ONNX-backed VAD (Silero) and ASR (Parakeet) backends live behind the `onnx`
 # feature. Host builds static-link sherpa-onnx (its build.rs downloads the
