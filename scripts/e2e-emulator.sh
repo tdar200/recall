@@ -262,7 +262,6 @@ ensure_foreground || fail "app did not come to foreground on relaunch"
 # Push test wav
 # ---------------------------------------------------------------------------
 step "Push test wav"
-"$ADB" shell mkdir -p /sdcard/Download || fail "mkdir /sdcard/Download failed"
 "$ADB" push "$TEST_WAV" "$DEVICE_WAV" || fail "push test wav failed"
 
 # ---------------------------------------------------------------------------

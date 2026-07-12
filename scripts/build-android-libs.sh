@@ -122,13 +122,29 @@ if [ "$VERIFY_ONLY" = true ]; then
   exit 0
 fi
 
+echo "== Step 0: regenerate UniFFI Kotlin bindings =="
+# android/app/src/main/java/com/recall/core/ is git-ignored (see .gitignore) —
+# on a fresh clone nothing else regenerates it, so a bare `./gradlew
+# assembleDebug` fails with unresolved `com.recall.core.*` references. Build a
+# host cdylib (fast debug build, not the cross-compiled Android .so) purely to
+# run bindgen against, then generate the Kotlin bindings from it.
+cargo build -p recall-core
+cargo run -p recall-core --bin uniffi-bindgen -- generate \
+  --library "$REPO_ROOT/target/debug/librecall_core.so" \
+  --language kotlin \
+  --out-dir "$REPO_ROOT/android/app/src/main/java"
+
 echo "== Step 1: fetch prebuilt sherpa-onnx android shared libs =="
 mkdir -p "$THIRD_PARTY_DIR"
 if [ ! -d "$THIRD_PARTY_DIR/jniLibs" ]; then
   TARBALL_PATH="$THIRD_PARTY_DIR/$SHERPA_TARBALL"
   if [ ! -f "$TARBALL_PATH" ]; then
     echo "downloading $SHERPA_URL"
-    curl -L --fail -o "$TARBALL_PATH" "$SHERPA_URL"
+    # Download to a .tmp sibling and mv into place only on success, so a
+    # partial/interrupted download can't leave a corrupt tarball behind that a
+    # re-run would mistake for a complete, cached download.
+    curl -L --fail -o "$TARBALL_PATH.tmp" "$SHERPA_URL"
+    mv "$TARBALL_PATH.tmp" "$TARBALL_PATH"
   fi
   echo "extracting $TARBALL_PATH"
   tar xjf "$TARBALL_PATH" -C "$THIRD_PARTY_DIR"

@@ -66,12 +66,20 @@ Still device-gated (needs the real Samsung, not an emulator):
 - ⏳ **Real-mic sanity** — start capture from the Feed FAB and speak; the
   emulator e2e drives the same code path but with file audio.
 
+Known limits (cheap mitigations shipped, not full fixes):
+
+- Audio arriving while a long conversation finalizes (inline ASR runs under the
+  engine's mutex) can still overrun the `AudioRecord` buffer if the finalize
+  takes longer than ~10s — the capture-side buffer was sized up to absorb
+  short stalls, but core-side worker-thread finalize (so `pushAudio` never
+  blocks on ASR) is future work.
+
 ## Build
 
 Host (core only — no device needed):
 
 ```sh
-cargo test                    # 50 unit tests
+cargo test                    # 54 unit tests (53 lib + 1 ffi_smoke)
 cargo test --features onnx    # + integration tests against real models (run scripts/fetch-models.sh first)
 ```
 
@@ -83,11 +91,16 @@ scripts/build-android-libs.sh        # cross-compiles librecall_core.so + stages
 cd android && ./gradlew :app:assembleDebug
 ```
 
-> **Fresh clone gotcha:** `third_party/` and `android/app/src/main/jniLibs/` are
-> git-ignored build artifacts. You **must** run `scripts/build-android-libs.sh`
-> before the Gradle build, or the APK will silently build *without* native libs
-> (Gradle does not fail on an empty jniLibs dir) and crash at first FFI call.
-> Requires `ANDROID_NDK_HOME` (NDK r27+), `cargo-ndk`, and the
+> **Fresh clone gotcha:** `third_party/`, `android/app/src/main/jniLibs/`, and
+> `android/app/src/main/java/com/recall/core/` (the UniFFI-generated Kotlin
+> bindings) are all git-ignored build artifacts. You **must** run
+> `scripts/build-android-libs.sh` before the Gradle build — it now regenerates
+> the Kotlin bindings (via `cargo run -p recall-core --bin uniffi-bindgen`) as
+> its first step, in addition to cross-compiling and staging the native libs.
+> Skipping it means the APK will silently build *without* native libs (Gradle
+> does not fail on an empty jniLibs dir) and crash at first FFI call — or, on a
+> truly fresh clone, fail to compile at all against the missing `com.recall.core`
+> bindings. Requires `ANDROID_NDK_HOME` (NDK r27+), `cargo-ndk`, and the
 > `aarch64-linux-android` / `x86_64-linux-android` Rust targets.
 
 Emulator end-to-end (headless, needs `ANDROID_HOME` + KVM):
