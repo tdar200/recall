@@ -78,7 +78,16 @@ class CaptureService : Service() {
             return
         }
 
-        val audioRecord = AudioRecord(MediaRecorder.AudioSource.MIC, sampleRate, channelConfig, encoding, 4 * minBuf)
+        val soakModeAtStart = repository.soakMode
+
+        val audioRecord: AudioRecord
+        try {
+            audioRecord = AudioRecord(MediaRecorder.AudioSource.MIC, sampleRate, channelConfig, encoding, 4 * minBuf)
+        } catch (t: Throwable) {
+            Log.e(TAG, "AudioRecord construction threw: ${t.message}", t)
+            abortCapture()
+            return
+        }
         if (audioRecord.state != AudioRecord.STATE_INITIALIZED) {
             Log.e(TAG, "AudioRecord failed to initialize")
             audioRecord.release()
@@ -95,7 +104,7 @@ class CaptureService : Service() {
                 if (read > 0) {
                     runBlocking { repository.pushAudio(buffer, read) }
                 }
-                if (repository.soakMode) {
+                if (soakModeAtStart) {
                     val now = System.currentTimeMillis()
                     if (now - lastHeartbeat >= HEARTBEAT_INTERVAL_MS) {
                         lastHeartbeat = now

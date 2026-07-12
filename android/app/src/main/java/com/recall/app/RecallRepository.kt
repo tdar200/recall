@@ -16,6 +16,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.withContext
 
 /**
@@ -62,7 +63,7 @@ class RecallRepository(context: Context) {
     }
 
     private fun bump() {
-        _refreshCounter.value = _refreshCounter.value + 1
+        _refreshCounter.update { it + 1 }
     }
 
     private var engine: RecallEngine? = null

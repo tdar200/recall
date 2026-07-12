@@ -111,11 +111,18 @@ object ModelManager {
         extractRoot.deleteRecursively()
         extractRoot.mkdirs()
 
+        val extractRootCanonical = extractRoot.canonicalPath
         BZip2CompressorInputStream(BufferedInputStream(FileInputStream(archive))).use { bz ->
             TarArchiveInputStream(bz).use { tar ->
                 var entry = tar.nextEntry
                 while (entry != null) {
                     val outFile = File(extractRoot, entry.name)
+                    val outFileCanonical = outFile.canonicalPath
+                    if (outFileCanonical != extractRootCanonical &&
+                        !outFileCanonical.startsWith(extractRootCanonical + File.separator)
+                    ) {
+                        throw java.io.IOException("blocked tar entry outside extract root: ${entry.name}")
+                    }
                     if (entry.isDirectory) {
                         outFile.mkdirs()
                     } else {
